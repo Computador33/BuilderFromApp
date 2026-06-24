@@ -98,14 +98,14 @@ jobs:
           echo "Injected localversion identifier overlay: $(cat localversion)"
 
       - name: Integrate KernelSU-Next
-        if: ${{ inputs.enable_kernelsu }}
+        if: inputs.enable_kernelsu
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           echo "Setting up KernelSU-Next..."
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
       - name: Patch SUSFS (Root Concealment Frame)
-        if: ${{ inputs.enable_susfs }}
+        if: inputs.enable_susfs
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           echo "Fetching SUSFS patch script..."
@@ -118,7 +118,7 @@ jobs:
           sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c || true
 
       - name: Configure BBR congestion control overrides
-        if: ${{ inputs.enable_bbr }}
+        if: inputs.enable_bbr
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
@@ -208,7 +208,7 @@ jobs:
           retention-days: 30
 
       - name: Build summary
-        if: ${{ always() }}
+        if: always()
         run: |
           BOOT_DIR="$GITHUB_WORKSPACE/kernel-source/out/arch/arm64/boot"
           {
