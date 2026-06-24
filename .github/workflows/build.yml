@@ -95,14 +95,14 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
 
           echo "Syncing target defconfig..."
-          make O=out LLVM=1 LLVM_IAS=1 "${{ github.event.inputs.kernel_defconfig }}"
+          make O=out "${{ github.event.inputs.kernel_defconfig }}"
 
-          echo "Compiling the boot kernel binary maps..."
-          make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CLANG_TRIPLE=aarch64-linux-gnu-
+          echo "Compiling the kernel image..."
+          make -j"$(nproc --all)" O=out Image.lz4
 
       - name: Package with AnyKernel3 (Google Tensor G5 GKI Target)
         run: |
