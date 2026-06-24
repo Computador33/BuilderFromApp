@@ -68,7 +68,6 @@ jobs:
             echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
             echo "- Clang version: \`${{ inputs.clang_version }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "PACKAGED_IMAGE=" >> "$GITHUB_ENV"
 
       - name: Prep Dependencies
         run: |
@@ -152,19 +151,6 @@ jobs:
             echo "zeromount cloak marker skipped; fs/namespace.c was not updated"
           fi
 
-      - name: Configure BBR congestion control overrides
-        if: inputs.enable_bbr
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel-source"
-          {
-            echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
-            echo "CONFIG_NET_SCH_FQ=y"
-            echo "CONFIG_NET_SCH_FQ_CODEL=y"
-          } >> "$DEFCONFIG_PATH"
-          echo "Applied default TCP Congestion control: BBR to $DEFCONFIG_PATH"
-
       - name: "Apply Custom Recipe: Wakelock Timeout Inhibitor Patch"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
@@ -178,15 +164,18 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           KERNEL_C_FILE_COUNT="$(find kernel/ -name "*.c" | wc -l)"
+          KPTR_MATCH_COUNT="$(grep -R -E 'kptr_restrict = [0-1]' --include='*.c' kernel/ | wc -l || true)"
           if [ "$KERNEL_C_FILE_COUNT" -eq 0 ]; then
             echo "No kernel C files found for kptr_restrict obfuscation"
+          elif [ "$KPTR_MATCH_COUNT" -eq 0 ]; then
+            echo "No kptr_restrict assignments matched the obfuscation pattern"
           elif find kernel/ -name "*.c" -print0 | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g'; then
-            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation"
+            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation ($KPTR_MATCH_COUNT matching assignments)"
           else
             echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
           fi
 
-      - name: Launch Principal Compilation (LLVM Optimized)
+      - name: Sync target defconfig
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
@@ -197,6 +186,37 @@ jobs:
 
           echo "Syncing target defconfig..."
           make O=out LLVM=1 LLVM_IAS=1 "$DEFCONFIG_TARGET"
+
+      - name: Configure BBR congestion control overrides
+        if: inputs.enable_bbr
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          if [ ! -f "out/.config" ]; then
+            echo "::error::Expected out/.config after syncing $DEFCONFIG_TARGET"
+            exit 1
+          fi
+          {
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo "CONFIG_NET_SCH_FQ_CODEL=y"
+          } >> out/.config
+          make O=out LLVM=1 LLVM_IAS=1 olddefconfig
+          echo "Applied default TCP Congestion control: BBR to out/.config"
+
+      - name: Launch Principal Compilation (LLVM Optimized)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
 
           echo "Compiling the boot kernel binary maps..."
           make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 \
@@ -235,7 +255,6 @@ jobs:
             ls -la AnyKernel3 || true
             exit 1
           fi
-          echo "PACKAGED_IMAGE=$KERNEL_IMAGE" >> "$GITHUB_ENV"
 
       - name: Deliver Release Artifact
         uses: actions/upload-artifact@v4
@@ -257,8 +276,10 @@ jobs:
             echo "- SUSFS enabled: \`${{ inputs.enable_susfs }}\`"
             echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
             echo "- Clang version: \`${{ inputs.clang_version }}\`"
-            if [ -n "${PACKAGED_IMAGE:-}" ]; then
-              echo "- Packaged image: \`$PACKAGED_IMAGE\`"
+            if [ -f "$BOOT_DIR/Image.lz4" ]; then
+              echo "- Packaged image: \`$BOOT_DIR/Image.lz4\`"
+            elif [ -f "$BOOT_DIR/Image" ]; then
+              echo "- Packaged image: \`$BOOT_DIR/Image\`"
             else
               echo "- Packaged image: not available"
             fi
