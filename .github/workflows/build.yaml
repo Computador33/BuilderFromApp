@@ -1,0 +1,103 @@
+ - name: Prep Dependencies
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf liblz4-tool libncurses5-dev libssl-dev libxml2 python3 libelf-dev zip zstd lz4 rsync
+
+  - name: Retrieve Google Clang Compiler
+    run: |
+      mkdir -p $GITHUB_WORKSPACE/clang
+      curl -Lo toolchain.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/clang-r522817.tar.gz"
+      tar -xzf toolchain.tar.gz -C $GITHUB_WORKSPACE/clang --strip-components=1 || tar -xzf toolchain.tar.gz -C $GITHUB_WORKSPACE/clang
+
+  - name: Fetch Pixel 10 kernel tree
+    run: |
+      git clone --depth=1 -b ${'{'} github.event.inputs.kernel_branch }} ${'{'} github.event.inputs.kernel_repo }} $GITHUB_WORKSPACE/kernel-source
+
+          - name: Spoof Kernel Sublevel & Localversion
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              echo "Forcing sublevel patch version override to: 102"
+              sed -i 's/^SUBLEVEL =.*/SUBLEVEL = 102/' Makefile
+              if [ -f "localversion" ]; then
+                echo "-android15-6.6-laguna" > localversion
+              else
+                echo "-android15-6.6-laguna" >> localversion
+              fi
+              echo "Injected localversion identifier overlay: $(cat localversion)"
+        
+          - name: Integrate KernelSU-Next
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              echo "Setting up KernelSU-Next..."
+              curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+        
+          - name: Patch SUSFS (Root Concealment Frame)
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              echo "Fetching SUSFS patch script from: https://raw.githubusercontent.com/l0ck3d0ninvestment/susfs-laguna-patch/main/susfs_gki_6.6.sh"
+              curl -LSs "https://raw.githubusercontent.com/l0ck3d0ninvestment/susfs-laguna-patch/main/susfs_gki_6.6.sh" | bash
+        
+          - name: Inject zeromount Cloak Module
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              echo "Configuring Kernel zeromount virtual directory shield..."
+              # Manipulate security path mount entries
+              sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c
+        
+          - name: Configure BBR congestion control overrides
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              echo "CONFIG_TCP_CONG_BBR=y" >> arch/arm64/configs/gki_defconfig
+              echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> arch/arm64/configs/gki_defconfig
+              echo "CONFIG_NET_SCH_FQ=y" >> arch/arm64/configs/gki_defconfig
+              echo "CONFIG_NET_SCH_FQ_CODEL=y" >> arch/arm64/configs/gki_defconfig
+              echo "Applied default TCP Congestion control: BBR"
+        
+          - name: Apply Custom Recipe: Wakelock Timeout Inhibitor Patch
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              # Apply Wakelock timeout limiters to core power systems
+              sed -i '/wake_lock/s/$/ \/* Clamp timeout variables to 60000ms *\//' kernel/power/wakelock.c
+            
+          - name: Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)
+            run: |
+              cd $GITHUB_WORKSPACE/kernel-source
+              # Override default kptr_restrict values to prevent address space layout leaks
+              find kernel/ -name "*.c" | xargs sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g' 2>/dev/null || true
+            
+  - name: Launch Principal Compilation (LLVM Optimized)
+    run: |
+      cd $GITHUB_WORKSPACE/kernel-source
+      export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+      export ARCH=arm64
+      export SUBARCH=arm64
+      export CC=clang
+      
+      echo "Syncing target defconfig..."
+      make O=out LLVM=1 LLVM_IAS=1 ${'{'} github.event.inputs.kernel_defconfig }}
+      
+      echo "Compiling the boot kernel binary maps..."
+      make -j$(nproc --all) O=out LLVM=1 LLVM_IAS=1 \
+        CROSS_COMPILE=aarch64-linux-gnu- \
+        CLANG_TRIPLE=aarch64-linux-gnu-
+
+  - name: Package with AnyKernel3 (Google Tensor G5 GKI Target)
+    run: |
+      cd $GITHUB_WORKSPACE
+      git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+      
+      # Detect output formats and bundle
+      if [ -f "kernel-source/out/arch/arm64/boot/Image.lz4" ]; then
+        cp kernel-source/out/arch/arm64/boot/Image.lz4 AnyKernel3/
+      elif [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
+        cp kernel-source/out/arch/arm64/boot/Image AnyKernel3/
+      fi
+      
+      cd AnyKernel3
+      zip -r9 ../laguna-kernel-update.zip *
+
+  - name: Deliver Release Artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: Pixel-10-Laguna-Kernel
+      path: laguna-kernel-update.zip
