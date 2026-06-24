@@ -42,6 +42,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ARTIFACT_NAME: laguna-kernel-update.zip
+      PACKAGING_DIR: AnyKernel3
 
     steps:
       - name: Checkout workflow repo
@@ -165,13 +168,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           KERNEL_C_FILE_COUNT="$(find kernel/ -name "*.c" | wc -l)"
-          KPTR_MATCH_COUNT="$(grep -R -E 'kptr_restrict[[:space:]]*=[[:space:]]*[0-1]' --include='*.c' kernel/ | wc -l || true)"
           if [ "$KERNEL_C_FILE_COUNT" -eq 0 ]; then
             echo "No kernel C files found for kptr_restrict obfuscation"
-          elif [ "$KPTR_MATCH_COUNT" -eq 0 ]; then
+          elif ! grep -R -q -E 'kptr_restrict[[:space:]]*=[[:space:]]*[0-1]' --include='*.c' kernel/; then
             echo "No kptr_restrict assignments matched the obfuscation pattern"
-          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -E -i 's/kptr_restrict[[:space:]]*=[[:space:]]*[0-1]/kptr_restrict = 2/g'; then
-            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation ($KPTR_MATCH_COUNT matching assignments)"
+          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -E -i 's/(kptr_restrict[[:space:]]*=[[:space:]]*)[0-1]/\12/g'; then
+            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation"
           else
             echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
           fi
@@ -230,7 +232,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 "$PACKAGING_DIR"
           BOOT_DIR="kernel-source/out/arch/arm64/boot"
 
           if [ -f "$BOOT_DIR/Image.lz4" ]; then
@@ -245,15 +247,15 @@ jobs:
             find kernel-source/out -type f \( -name 'Image*' -o -name 'vmlinux' -o -name 'System.map' \) -print || true
             exit 1
           fi
-          cp "$KERNEL_IMAGE" AnyKernel3/
+          cp "$KERNEL_IMAGE" "$PACKAGING_DIR"/
           echo "Selected kernel image: $KERNEL_IMAGE"
 
-          cd AnyKernel3
-          zip -r9 ../laguna-kernel-update.zip .
+          cd "$PACKAGING_DIR"
+          zip -r9 "../$ARTIFACT_NAME" .
           cd ..
-          if [ ! -s "laguna-kernel-update.zip" ]; then
-            echo "::error::laguna-kernel-update.zip was not created or is empty."
-            ls -la AnyKernel3 || true
+          if [ ! -s "$ARTIFACT_NAME" ]; then
+            echo "::error::$ARTIFACT_NAME was not created or is empty."
+            ls -la "$PACKAGING_DIR" || true
             exit 1
           fi
 
@@ -261,7 +263,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Pixel-10-Laguna-Kernel
-          path: laguna-kernel-update.zip
+          path: ${{ env.ARTIFACT_NAME }}
           retention-days: 30
 
       - name: Build summary
@@ -284,8 +286,8 @@ jobs:
             else
               echo "- Packaged image: not available"
             fi
-            if [ -f "$GITHUB_WORKSPACE/laguna-kernel-update.zip" ]; then
-              echo "- Artifact zip: \`laguna-kernel-update.zip\` ($(du -h "$GITHUB_WORKSPACE/laguna-kernel-update.zip" | cut -f1))"
+            if [ -f "$GITHUB_WORKSPACE/$ARTIFACT_NAME" ]; then
+              echo "- Artifact zip: \`$ARTIFACT_NAME\` ($(du -h "$GITHUB_WORKSPACE/$ARTIFACT_NAME" | cut -f1))"
             else
               echo "- Artifact zip: not created"
             fi
