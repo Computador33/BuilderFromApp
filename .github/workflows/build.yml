@@ -81,7 +81,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/clang"
           echo "Downloading Google Clang version: ${{ inputs.clang_version }}"
-          curl -fL -o toolchain.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/${{ inputs.clang_version }}.tar.gz"
+          if ! curl -fL -o toolchain.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/${{ inputs.clang_version }}.tar.gz"; then
+            echo "::error::Failed to download Google Clang version '${{ inputs.clang_version }}'. Verify that the version exists in android.googlesource.com."
+            exit 1
+          fi
           tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang" --strip-components=1 || tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang"
           "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
 
@@ -123,6 +126,9 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
           DEFCONFIG_PATH="${{ inputs.kernel_defconfig }}"
+          # This workflow targets Pixel/Tensor arm64 GKI builds, so bare defconfig
+          # names are resolved relative to arch/arm64/configs while still allowing
+          # callers to pass a full path when needed.
           case "$DEFCONFIG_PATH" in
             arch/*) ;;
             *) DEFCONFIG_PATH="arch/arm64/configs/$DEFCONFIG_PATH" ;;
@@ -184,7 +190,7 @@ jobs:
             echo "Contents of $BOOT_DIR:"
             ls -la "$BOOT_DIR" || true
             echo "Nearby build outputs:"
-            find kernel-source/out -maxdepth 4 -type f \( -name 'Image*' -o -name 'vmlinux' -o -name 'System.map' \) -print || true
+            find kernel-source/out -type f \( -name 'Image*' -o -name 'vmlinux' -o -name 'System.map' \) -print || true
             exit 1
           fi
           cp "$KERNEL_IMAGE" AnyKernel3/
