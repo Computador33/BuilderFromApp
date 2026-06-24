@@ -68,7 +68,7 @@ jobs:
             echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
             echo "- Clang version: \`${{ inputs.clang_version }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "PACKAGED_IMAGE=not available" >> "$GITHUB_ENV"
+          echo "PACKAGED_IMAGE=" >> "$GITHUB_ENV"
 
       - name: Prep Dependencies
         run: |
@@ -177,11 +177,11 @@ jobs:
       - name: "Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          mapfile -d '' KERNEL_C_FILES < <(find kernel/ -name "*.c" -print0)
-          if [ "${#KERNEL_C_FILES[@]}" -eq 0 ]; then
+          KERNEL_C_FILE_COUNT="$(find kernel/ -name "*.c" | wc -l)"
+          if [ "$KERNEL_C_FILE_COUNT" -eq 0 ]; then
             echo "No kernel C files found for kptr_restrict obfuscation"
-          elif printf '%s\0' "${KERNEL_C_FILES[@]}" | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g'; then
-            echo "Processed ${#KERNEL_C_FILES[@]} kernel C files for kptr_restrict obfuscation"
+          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g'; then
+            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation"
           else
             echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
           fi
