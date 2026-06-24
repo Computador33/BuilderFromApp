@@ -68,6 +68,7 @@ jobs:
             echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
             echo "- Clang version: \`${{ inputs.clang_version }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "PACKAGED_IMAGE=not available" >> "$GITHUB_ENV"
 
       - name: Prep Dependencies
         run: |
@@ -85,12 +86,40 @@ jobs:
             echo "::error::Failed to download Google Clang version '${{ inputs.clang_version }}'. Verify that the version exists in android.googlesource.com."
             exit 1
           fi
-          tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang" --strip-components=1 || tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          if tar -tzf toolchain.tar.gz | head -n 1 | grep -q '/'; then
+            tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang" --strip-components=1
+          else
+            tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          fi
+          echo "Clang version:"
           "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
 
       - name: Fetch Pixel 10 kernel tree
         run: |
           git clone --depth=1 -b "${{ github.event.inputs.kernel_branch }}" "${{ github.event.inputs.kernel_repo }}" "$GITHUB_WORKSPACE/kernel-source"
+
+      - name: Resolve kernel defconfig path
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          DEFCONFIG_INPUT="${{ inputs.kernel_defconfig }}"
+          DEFCONFIG_TARGET="$DEFCONFIG_INPUT"
+          case "$DEFCONFIG_INPUT" in
+            arch/arm64/configs/*)
+              DEFCONFIG_PATH="$DEFCONFIG_INPUT"
+              DEFCONFIG_TARGET="${DEFCONFIG_INPUT#arch/arm64/configs/}"
+              ;;
+            *)
+              DEFCONFIG_PATH="arch/arm64/configs/$DEFCONFIG_INPUT"
+              ;;
+          esac
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            echo "::error::Unable to locate defconfig file: $DEFCONFIG_PATH"
+            exit 1
+          fi
+          echo "DEFCONFIG_PATH=$DEFCONFIG_PATH" >> "$GITHUB_ENV"
+          echo "DEFCONFIG_TARGET=$DEFCONFIG_TARGET" >> "$GITHUB_ENV"
+          echo "Resolved defconfig path: $DEFCONFIG_PATH"
 
       - name: Spoof Kernel Sublevel & Localversion
         run: |
@@ -125,14 +154,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
-          DEFCONFIG_PATH="${{ inputs.kernel_defconfig }}"
-          # This workflow targets Pixel/Tensor arm64 GKI builds, so bare defconfig
-          # names are resolved relative to arch/arm64/configs while still allowing
-          # callers to pass a full path when needed.
-          case "$DEFCONFIG_PATH" in
-            arch/*) ;;
-            *) DEFCONFIG_PATH="arch/arm64/configs/$DEFCONFIG_PATH" ;;
-          esac
           if [ ! -f "$DEFCONFIG_PATH" ]; then
             echo "::error::Unable to locate defconfig file: $DEFCONFIG_PATH"
             exit 1
@@ -165,7 +186,7 @@ jobs:
           export CC=clang
 
           echo "Syncing target defconfig..."
-          make O=out LLVM=1 LLVM_IAS=1 "${{ github.event.inputs.kernel_defconfig }}"
+          make O=out LLVM=1 LLVM_IAS=1 "$DEFCONFIG_TARGET"
 
           echo "Compiling the boot kernel binary maps..."
           make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 \
