@@ -6,23 +6,71 @@ on:
       kernel_repo:
         description: "Kernel repository URL"
         required: true
+        type: string
         default: "https://github.com/your-user/your-kernel-repo"
       kernel_branch:
         description: "Kernel branch"
         required: true
+        type: string
         default: "main"
       kernel_defconfig:
         description: "Kernel defconfig (example: gki_defconfig)"
         required: true
+        type: string
         default: "gki_defconfig"
+      enable_kernelsu:
+        description: "Enable KernelSU-Next integration"
+        required: true
+        type: boolean
+        default: true
+      enable_susfs:
+        description: "Enable SUSFS root concealment patch"
+        required: true
+        type: boolean
+        default: true
+      enable_bbr:
+        description: "Enable BBR TCP congestion control"
+        required: true
+        type: boolean
+        default: true
+      clang_version:
+        description: "Google Clang version (example: clang-r522817)"
+        required: true
+        type: string
+        default: "clang-r522817"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ARTIFACT_NAME: laguna-kernel-update.zip
+      PACKAGING_DIR: AnyKernel3
 
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v4
+
+      - name: Display build configuration
+        run: |
+          echo "Build request received with the following configuration:"
+          echo "  kernel_repo: ${{ inputs.kernel_repo }}"
+          echo "  kernel_branch: ${{ inputs.kernel_branch }}"
+          echo "  kernel_defconfig: ${{ inputs.kernel_defconfig }}"
+          echo "  enable_kernelsu: ${{ inputs.enable_kernelsu }}"
+          echo "  enable_susfs: ${{ inputs.enable_susfs }}"
+          echo "  enable_bbr: ${{ inputs.enable_bbr }}"
+          echo "  clang_version: ${{ inputs.clang_version }}"
+          {
+            echo "## Requested build configuration"
+            echo ""
+            echo "- Kernel repository: \`${{ inputs.kernel_repo }}\`"
+            echo "- Kernel branch: \`${{ inputs.kernel_branch }}\`"
+            echo "- Kernel defconfig: \`${{ inputs.kernel_defconfig }}\`"
+            echo "- KernelSU-Next enabled: \`${{ inputs.enable_kernelsu }}\`"
+            echo "- SUSFS enabled: \`${{ inputs.enable_susfs }}\`"
+            echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
+            echo "- Clang version: \`${{ inputs.clang_version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prep Dependencies
         run: |
@@ -33,13 +81,47 @@ jobs:
 
       - name: Retrieve Google Clang Compiler
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/clang"
-          curl -L -o toolchain.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/clang-r522817.tar.gz"
-          tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang" --strip-components=1 || tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          echo "Downloading Google Clang version: ${{ inputs.clang_version }}"
+          if ! curl -fL -o toolchain.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/llvm-binutils-stable/${{ inputs.clang_version }}.tar.gz"; then
+            echo "::error::Failed to download Google Clang version '${{ inputs.clang_version }}'. Verify that the version exists in android.googlesource.com."
+            exit 1
+          fi
+          if tar -tzf toolchain.tar.gz | head -n 1 | grep -q '/'; then
+            tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang" --strip-components=1
+          else
+            tar -xzf toolchain.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          fi
+          echo "Clang version:"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
 
       - name: Fetch Pixel 10 kernel tree
         run: |
           git clone --depth=1 -b "${{ github.event.inputs.kernel_branch }}" "${{ github.event.inputs.kernel_repo }}" "$GITHUB_WORKSPACE/kernel-source"
+
+      - name: Resolve kernel defconfig path
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          DEFCONFIG_INPUT="${{ inputs.kernel_defconfig }}"
+          DEFCONFIG_TARGET="$DEFCONFIG_INPUT"
+          case "$DEFCONFIG_INPUT" in
+            arch/arm64/configs/*)
+              DEFCONFIG_PATH="$DEFCONFIG_INPUT"
+              DEFCONFIG_TARGET="${DEFCONFIG_INPUT#arch/arm64/configs/}"
+              ;;
+            *)
+              DEFCONFIG_PATH="arch/arm64/configs/$DEFCONFIG_INPUT"
+              ;;
+          esac
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            echo "::error::Unable to locate defconfig file: $DEFCONFIG_PATH"
+            exit 1
+          fi
+          echo "DEFCONFIG_PATH=$DEFCONFIG_PATH" >> "$GITHUB_ENV"
+          echo "DEFCONFIG_TARGET=$DEFCONFIG_TARGET" >> "$GITHUB_ENV"
+          echo "Resolved defconfig path: $DEFCONFIG_PATH"
 
       - name: Spoof Kernel Sublevel & Localversion
         run: |
@@ -50,12 +132,14 @@ jobs:
           echo "Injected localversion identifier overlay: $(cat localversion)"
 
       - name: Integrate KernelSU-Next
+        if: inputs.enable_kernelsu
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           echo "Setting up KernelSU-Next..."
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
       - name: Patch SUSFS (Root Concealment Frame)
+        if: inputs.enable_susfs
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           echo "Fetching SUSFS patch script..."
@@ -64,32 +148,39 @@ jobs:
       - name: Inject zeromount Cloak Module
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          # Optional patch, don't fail if target line doesn't exist
-          sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c || true
+          # Add a non-fatal marker near security_sb_mount for downstream zeromount tooling.
+          if sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c; then
+            echo "zeromount cloak marker processed in fs/namespace.c"
+          else
+            echo "zeromount cloak marker skipped; fs/namespace.c was not updated"
+          fi
 
-      - name: Configure BBR congestion control overrides
+      - name: "Apply Custom Recipe: Wakelock Timeout Marker"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          {
-            echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
-            echo "CONFIG_NET_SCH_FQ=y"
-            echo "CONFIG_NET_SCH_FQ_CODEL=y"
-          } >> arch/arm64/configs/gki_defconfig
-          echo "Applied default TCP Congestion control: BBR"
+          if sed -i '/wake_lock/s/$/ \/* Annotate wakelock timeout path *\//' kernel/power/wakelock.c; then
+            echo "Wakelock timeout marker processed in kernel/power/wakelock.c"
+          else
+            echo "Wakelock timeout marker skipped; kernel/power/wakelock.c was not updated"
+          fi
 
-      - name: Apply Custom Recipe: Wakelock Timeout Inhibitor Patch
+      - name: "Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          sed -i '/wake_lock/s/$/ \/* Clamp timeout variables to 60000ms *\//' kernel/power/wakelock.c || true
+          KERNEL_C_FILE_COUNT="$(find kernel/ -name "*.c" | wc -l)"
+          if [ "$KERNEL_C_FILE_COUNT" -eq 0 ]; then
+            echo "No kernel C files found for kptr_restrict obfuscation"
+          elif ! grep -R -q -E 'kptr_restrict[[:space:]]*=[[:space:]]*[0-1]' --include='*.c' kernel/; then
+            echo "No kptr_restrict assignments matched the obfuscation pattern"
+          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -E -i 's/(kptr_restrict[[:space:]]*=[[:space:]]*)[0-1]/\12/g'; then
+            echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation"
+          else
+            echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
+          fi
 
-      - name: Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)
+      - name: Sync target defconfig
         run: |
-          cd "$GITHUB_WORKSPACE/kernel-source"
-          find kernel/ -name "*.c" -print0 | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g' 2>/dev/null || true
-
-      - name: Launch Principal Compilation (LLVM Optimized)
-        run: |
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
@@ -97,32 +188,116 @@ jobs:
           export CC=clang
 
           echo "Syncing target defconfig..."
-          make O=out LLVM=1 LLVM_IAS=1 "${{ github.event.inputs.kernel_defconfig }}"
+          make O=out LLVM=1 LLVM_IAS=1 "$DEFCONFIG_TARGET"
+
+      - name: Configure BBR congestion control overrides
+        if: inputs.enable_bbr
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          if [ ! -f "out/.config" ]; then
+            echo "::error::Expected out/.config after syncing $DEFCONFIG_TARGET"
+            exit 1
+          fi
+          {
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo "CONFIG_NET_SCH_FQ_CODEL=y"
+          } >> out/.config
+          make O=out LLVM=1 LLVM_IAS=1 olddefconfig
+          echo "Applied default TCP Congestion control: BBR to out/.config"
+
+      - name: Launch Principal Compilation (LLVM Optimized)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
 
           echo "Compiling the boot kernel binary maps..."
           make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CLANG_TRIPLE=aarch64-linux-gnu-
+          echo "Boot output directory contents:"
+          ls -la out/arch/arm64/boot || true
 
       - name: Package with AnyKernel3 (Google Tensor G5 GKI Target)
         run: |
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 "$PACKAGING_DIR"
+          BOOT_DIR="kernel-source/out/arch/arm64/boot"
 
-          if [ -f "kernel-source/out/arch/arm64/boot/Image.lz4" ]; then
-            cp kernel-source/out/arch/arm64/boot/Image.lz4 AnyKernel3/
-          elif [ -f "kernel-source/out/arch/arm64/boot/Image" ]; then
-            cp kernel-source/out/arch/arm64/boot/Image AnyKernel3/
+          if [ -f "$BOOT_DIR/Image.lz4" ]; then
+            KERNEL_IMAGE="$BOOT_DIR/Image.lz4"
+          elif [ -f "$BOOT_DIR/Image" ]; then
+            KERNEL_IMAGE="$BOOT_DIR/Image"
           else
-            echo "No kernel Image found."
+            echo "::error::No kernel image found in $BOOT_DIR"
+            echo "Contents of $BOOT_DIR:"
+            ls -la "$BOOT_DIR" || true
+            echo "Nearby build outputs:"
+            find kernel-source/out -type f \( -name 'Image*' -o -name 'vmlinux' -o -name 'System.map' \) -print || true
             exit 1
           fi
+          cp "$KERNEL_IMAGE" "$PACKAGING_DIR"/
+          echo "Selected kernel image: $KERNEL_IMAGE"
 
-          cd AnyKernel3
-          zip -r9 ../laguna-kernel-update.zip .
+          cd "$PACKAGING_DIR"
+          zip -r9 "../$ARTIFACT_NAME" .
+          cd ..
+          if [ ! -s "$ARTIFACT_NAME" ]; then
+            echo "::error::$ARTIFACT_NAME was not created or is empty."
+            ls -la "$PACKAGING_DIR" || true
+            exit 1
+          fi
 
       - name: Deliver Release Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Pixel-10-Laguna-Kernel
-          path: laguna-kernel-update.zip
+          path: ${{ env.ARTIFACT_NAME }}
+          retention-days: 30
+
+      - name: Build summary
+        if: always()
+        run: |
+          BOOT_DIR="$GITHUB_WORKSPACE/kernel-source/out/arch/arm64/boot"
+          {
+            echo ""
+            echo "## Build result"
+            echo ""
+            echo "- Job status: \`${{ job.status }}\`"
+            echo "- KernelSU-Next enabled: \`${{ inputs.enable_kernelsu }}\`"
+            echo "- SUSFS enabled: \`${{ inputs.enable_susfs }}\`"
+            echo "- BBR enabled: \`${{ inputs.enable_bbr }}\`"
+            echo "- Clang version: \`${{ inputs.clang_version }}\`"
+            if [ -f "$BOOT_DIR/Image.lz4" ]; then
+              echo "- Packaged image: \`$BOOT_DIR/Image.lz4\`"
+            elif [ -f "$BOOT_DIR/Image" ]; then
+              echo "- Packaged image: \`$BOOT_DIR/Image\`"
+            else
+              echo "- Packaged image: not available"
+            fi
+            if [ -f "$GITHUB_WORKSPACE/$ARTIFACT_NAME" ]; then
+              echo "- Artifact zip: \`$ARTIFACT_NAME\` ($(du -h "$GITHUB_WORKSPACE/$ARTIFACT_NAME" | cut -f1))"
+            else
+              echo "- Artifact zip: not created"
+            fi
+            echo ""
+            echo "### Boot output diagnostics"
+            if [ -d "$BOOT_DIR" ]; then
+              echo '```'
+              ls -la "$BOOT_DIR"
+              echo '```'
+            else
+              echo "- Boot output directory not found: \`$BOOT_DIR\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
