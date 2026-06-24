@@ -1,19 +1,27 @@
 name: Build Kernel
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
   workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "Kernel repository URL"
+        required: true
+        default: "https://github.com/torvalds/linux"
+      kernel_branch:
+        description: "Kernel branch"
+        required: true
+        default: "main"
+      kernel_defconfig:
+        description: "Kernel defconfig (e.g. defconfig or gki_defconfig)"
+        required: true
+        default: "defconfig"
 
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout workflow repo
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -29,9 +37,16 @@ jobs:
             cpio \
             dwarves
 
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 -b "${{ github.event.inputs.kernel_branch }}" \
+            "${{ github.event.inputs.kernel_repo }}" \
+            "$GITHUB_WORKSPACE/kernel-source"
+
       - name: Build kernel
         run: |
-          make defconfig
+          cd "$GITHUB_WORKSPACE/kernel-source"
+          make "${{ github.event.inputs.kernel_defconfig }}"
           make -j"$(nproc)"
 
       - name: Upload artifacts
@@ -39,7 +54,7 @@ jobs:
         with:
           name: kernel-build-output
           path: |
-            arch/**/boot/*
-            vmlinux
-            System.map
+            kernel-source/arch/**/boot/*
+            kernel-source/vmlinux
+            kernel-source/System.map
           if-no-files-found: warn
