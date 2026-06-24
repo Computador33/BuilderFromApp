@@ -145,31 +145,32 @@ jobs:
       - name: Inject zeromount Cloak Module
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
+          # Add a non-fatal marker near security_sb_mount for downstream zeromount tooling.
           if sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c; then
             echo "zeromount cloak marker processed in fs/namespace.c"
           else
             echo "zeromount cloak marker skipped; fs/namespace.c was not updated"
           fi
 
-      - name: "Apply Custom Recipe: Wakelock Timeout Inhibitor Patch"
+      - name: "Apply Custom Recipe: Wakelock Timeout Marker"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          if sed -i '/wake_lock/s/$/ \/* Clamp timeout variables to 60000ms *\//' kernel/power/wakelock.c; then
-            echo "Wakelock timeout inhibitor patch processed in kernel/power/wakelock.c"
+          if sed -i '/wake_lock/s/$/ \/* Annotate wakelock timeout path *\//' kernel/power/wakelock.c; then
+            echo "Wakelock timeout marker processed in kernel/power/wakelock.c"
           else
-            echo "Wakelock timeout inhibitor patch skipped; kernel/power/wakelock.c was not updated"
+            echo "Wakelock timeout marker skipped; kernel/power/wakelock.c was not updated"
           fi
 
       - name: "Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
           KERNEL_C_FILE_COUNT="$(find kernel/ -name "*.c" | wc -l)"
-          KPTR_MATCH_COUNT="$(grep -R -E 'kptr_restrict = [0-1]' --include='*.c' kernel/ | wc -l || true)"
+          KPTR_MATCH_COUNT="$(grep -R -E 'kptr_restrict[[:space:]]*=[[:space:]]*[0-1]' --include='*.c' kernel/ | wc -l || true)"
           if [ "$KERNEL_C_FILE_COUNT" -eq 0 ]; then
             echo "No kernel C files found for kptr_restrict obfuscation"
           elif [ "$KPTR_MATCH_COUNT" -eq 0 ]; then
             echo "No kptr_restrict assignments matched the obfuscation pattern"
-          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g'; then
+          elif find kernel/ -name "*.c" -print0 | xargs -0 sed -E -i 's/kptr_restrict[[:space:]]*=[[:space:]]*[0-1]/kptr_restrict = 2/g'; then
             echo "Processed $KERNEL_C_FILE_COUNT kernel C files for kptr_restrict obfuscation ($KPTR_MATCH_COUNT matching assignments)"
           else
             echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
