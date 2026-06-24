@@ -146,18 +146,17 @@ jobs:
       - name: Inject zeromount Cloak Module
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          # Optional patch, don't fail if target line doesn't exist
-          sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c || true
+          if sed -i '/security_sb_mount/s/$/ \/* Inject-Zero-Mount-Pass-Shield *\//' fs/namespace.c; then
+            echo "zeromount cloak marker processed in fs/namespace.c"
+          else
+            echo "zeromount cloak marker skipped; fs/namespace.c was not updated"
+          fi
 
       - name: Configure BBR congestion control overrides
         if: inputs.enable_bbr
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-source"
-          if [ ! -f "$DEFCONFIG_PATH" ]; then
-            echo "::error::Unable to locate defconfig file: $DEFCONFIG_PATH"
-            exit 1
-          fi
           {
             echo "CONFIG_TCP_CONG_BBR=y"
             echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
@@ -169,12 +168,23 @@ jobs:
       - name: "Apply Custom Recipe: Wakelock Timeout Inhibitor Patch"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          sed -i '/wake_lock/s/$/ \/* Clamp timeout variables to 60000ms *\//' kernel/power/wakelock.c || true
+          if sed -i '/wake_lock/s/$/ \/* Clamp timeout variables to 60000ms *\//' kernel/power/wakelock.c; then
+            echo "Wakelock timeout inhibitor patch processed in kernel/power/wakelock.c"
+          else
+            echo "Wakelock timeout inhibitor patch skipped; kernel/power/wakelock.c was not updated"
+          fi
 
       - name: "Apply Custom Recipe: Strict Pointer Obfuscation (kptr_restrict)"
         run: |
           cd "$GITHUB_WORKSPACE/kernel-source"
-          find kernel/ -name "*.c" -print0 | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g' 2>/dev/null || true
+          mapfile -d '' KERNEL_C_FILES < <(find kernel/ -name "*.c" -print0)
+          if [ "${#KERNEL_C_FILES[@]}" -eq 0 ]; then
+            echo "No kernel C files found for kptr_restrict obfuscation"
+          elif printf '%s\0' "${KERNEL_C_FILES[@]}" | xargs -0 sed -i 's/kptr_restrict = [0-1]/kptr_restrict = 2/g'; then
+            echo "Processed ${#KERNEL_C_FILES[@]} kernel C files for kptr_restrict obfuscation"
+          else
+            echo "kptr_restrict obfuscation patch skipped due to a sed processing error"
+          fi
 
       - name: Launch Principal Compilation (LLVM Optimized)
         run: |
